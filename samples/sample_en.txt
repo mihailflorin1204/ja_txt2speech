@@ -1,0 +1,3 @@
+Hello! This is a sample document written in English.
+It will be converted into spoken audio using a local text to speech engine.
+The quick brown fox jumps over the lazy dog.

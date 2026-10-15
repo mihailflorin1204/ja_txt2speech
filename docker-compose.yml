@@ -1,0 +1,50 @@
+version: "3.9"
+
+# jp-tts compose: app (backend + built frontend) + engines.
+# VOICEVOX and SBV2 run as separate services; the app talks to them over HTTP.
+# For GPU, install the NVIDIA container toolkit and uncomment deploy blocks.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - app-data:/data
+    environment:
+      JPTTS_VOICEVOX_HOST: voicevox
+      JPTTS_SBV2_HOST: sbv2
+      JPTTS_DEVICE: auto
+      JPTTS_DATA_DIR: /data
+    depends_on:
+      - voicevox
+      - sbv2
+
+  voicevox:
+    image: ghcr.io/voicevox/voicevox_engine:latest-cpu
+    ports:
+      - "50021:50021"
+    # for GPU builds use the nvidia image variant + deploy.resources:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ capabilities: [gpu] }]
+
+  sbv2:
+    build:
+      context: .
+      dockerfile: external/Style-Bert-VITS2/Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - sbv2-models:/opt/style-bert-vits2/model_assets
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{ capabilities: [gpu] }]
+
+volumes:
+  app-data:
+  sbv2-models:
