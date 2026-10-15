@@ -3,7 +3,8 @@
 A fully local Japanese text-to-speech web app. Converts Japanese text into
 natural-sounding speech on your own machine — no cloud APIs, no telemetry.
 
-See `SPEC.md` for the full specification. License: **AGPL-3.0** (required by
+See `SPEC.md` for the full specification and `docs/SETUP.md` for detailed
+engine setup/troubleshooting. License: **AGPL-3.0** (required by
 Style-Bert-VITS2). Per-voice credits are shown in the voice catalog and must
 be preserved in derivative works (e.g. `VOICEVOX:ずんだもん`).
 
@@ -17,7 +18,7 @@ as synthetic.
 |---|---|
 | Backend | Python 3.11, FastAPI, SQLModel/SQLite, pyopenjtalk-plus + fugashi |
 | Frontend | React, TypeScript, Vite, Tailwind, TanStack Query, Zustand |
-| Engines | VOICEVOX Engine (HTTP subprocess), Style-Bert-VITS2 (own venv + API server), GPT-SoVITS (M5) |
+| Engines | VOICEVOX Engine, Style-Bert-VITS2, GPT-SoVITS — each an HTTP subprocess in its own venv |
 
 ## Setup (Windows)
 
@@ -67,7 +68,21 @@ backend/.venv/Scripts/python -m pytest backend/tests
 cd frontend && pnpm test   # Vitest
 ```
 
-## Milestones
+## Status
 
-M1 foundation · M2 controls+streaming · M3 accent/dictionary · M4 long-text
-jobs · M5 voice cloning · M6 hardening — see `SPEC.md` §11.
+All milestones implemented and verified live on an RTX 3070:
+
+- **M1** foundation — VOICEVOX (127 voices) + SBV2 (jvnv F1/F2/M1/M2, 7 styles)
+  live through the pluggable router; offline engines keep voices in catalog
+- **M2** prosody controls, presets, per-sentence overrides, WS streaming +
+  AudioWorklet player, OpenAI-compatible `/v1/audio/speech`
+- **M3** `/analyze`, accent editor, user dictionary, 78/78 reading corpus
+- **M4** checkpointed long-text jobs (txt/epub/md → wav/mp3/m4b/srt), Jobs page
+- **M5** GPT-SoVITS quick cloning: upload sample → quality check → consent →
+  clone voice in catalog → synthesize (fine-tune mode is a stub)
+- **M6** metrics endpoint + Settings page, ja/en UI toggle, aria labels,
+  docker-compose skeleton, `scripts/smoke_e2e.py` (21 live checks)
+
+Known limits: GPT-SoVITS fine-tune is not implemented (quick cloning only);
+docker-compose is untested on this machine; `initialize.py --only_infer` for
+SBV2 was short-circuited to JP-only models.

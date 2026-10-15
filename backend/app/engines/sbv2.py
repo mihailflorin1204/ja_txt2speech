@@ -59,11 +59,16 @@ class Sbv2Engine:
             )
         self._starting = True
         try:
+            # capture output to a log file — the server traces engine errors
+            self._log_path = get_settings().data_dir / "logs" / "sbv2-server.log"
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            logf = open(self._log_path, "ab", buffering=0)  # noqa: SIM115
+            self._log_file = logf
+            env = dict(__import__("os").environ, PYTHONUTF8="1")
             self._proc = await asyncio.create_subprocess_exec(
                 str(self._python), "server_fastapi.py",
-                cwd=str(self._repo),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                cwd=str(self._repo), env=env,
+                stdout=logf, stderr=asyncio.subprocess.STDOUT,
             )
             log.info("spawned SBV2 server pid=%s", self._proc.pid)
             await self._wait_ready(timeout=180.0)
@@ -79,6 +84,10 @@ class Sbv2Engine:
             except TimeoutError:
                 self._proc.kill()
         self._proc = None
+        lf = getattr(self, "_log_file", None)
+        if lf is not None:
+            lf.close()
+            self._log_file = None
 
     async def _is_up(self) -> bool:
         try:

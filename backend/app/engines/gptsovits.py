@@ -21,6 +21,7 @@ from app.engines.base import (
     AudioChunk,
     EngineHealth,
     EngineUnavailableError,
+    Feature,
     SynthesisSettings,
     Utterance,
     VoiceInfo,
@@ -31,8 +32,12 @@ log = logging.getLogger("engine.gptsovits")
 
 
 class GPTSoVITSEngine:
+    id = "gptsovits"
     name = "gptsovits"
     display_name = "GPT-SoVITS (voice clone)"
+
+    def supports(self, feature: Feature) -> bool:
+        return feature in {Feature.CLONING, Feature.SPEED}
 
     def __init__(self) -> None:
         s = get_settings()
@@ -112,19 +117,30 @@ class GPTSoVITSEngine:
 
     async def list_voices(self) -> list[VoiceInfo]:
         """Clone voices come from the DB, not the engine itself."""
+        from app.models.tables import Voice
         with Session(get_engine()) as session:
-            samples = session.exec(
-                select(CloneSample).where(CloneSample.status == "ready")).all()
-        return [VoiceInfo(
-            id=f"gptsovits:{s.id}", engine=self.name, engine_voice_id=str(s.id),
-            name=s.name, styles=["clone"],
-            features=["clone"], credit="GPT-SoVITS",
-        ) for s in samples]
+            samples = session.exec(select(CloneSample)).all()
+            voice_map = {
+                v.id: v for v in session.exec(
+                    select(Voice).where(Voice.engine == self.name)).all()
+            }
+        out = []
+        for s in samples:
+            v = voice_map.get(f"{self.name}:{s.id}")
+            if v is None or not s.quality_report.get("ok"):
+                continue
+            out.append(VoiceInfo(
+                id=v.id, engine=self.name, engine_voice_id=s.id,
+                name=v.name, gender=v.gender,
+                styles=["clone"], features=["clone"],
+                credit="GPT-SoVITS", is_cloned=True,
+                is_favorite=v.is_favorite))
+        return out
 
     def _sample(self, engine_voice_id: str) -> CloneSample:
         with Session(get_engine()) as session:
-            s = session.get(CloneSample, int(engine_voice_id))
-            if s is None or s.status != "ready":
+            s = session.get(CloneSample, engine_voice_id)
+            if s is None or not s.quality_report.get("ok"):
                 raise EngineUnavailableError("gptsovits: clone sample not ready")
             return s
 

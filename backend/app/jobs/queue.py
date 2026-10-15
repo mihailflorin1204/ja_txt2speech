@@ -136,6 +136,13 @@ async def _run_job(job_id: str, synthesize_fn, save_wav) -> None:
         job = session.get(Job, job_id)
         if job is None or job.status in ("cancelled", "completed"):
             return
+        if job.kind == "clone_finetune":
+            job.status = "failed"
+            job.error = ("clone fine-tuning is not implemented yet — "
+                         "use mode='quick' for zero/few-shot cloning")
+            session.add(job)
+            session.commit()
+            return
         job.status = "running"
         session.add(job)
         session.commit()

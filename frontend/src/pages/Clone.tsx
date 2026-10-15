@@ -13,7 +13,7 @@ interface Quality {
 }
 
 interface Sample {
-  id: number
+  id: string
   name: string
   audio_path: string
   transcript: string
@@ -49,7 +49,7 @@ export default function Clone() {
         const b = await r.json().catch(() => null)
         throw new Error(b?.error?.message ?? r.statusText)
       }
-      return r.json() as Promise<{ id: number; status: string; quality: Quality }>
+      return r.json() as Promise<{ id: string; voice_id: string; status: string; quality: Quality }>
     },
     onSuccess: (d) => {
       setLastResult(d)
@@ -59,7 +59,7 @@ export default function Clone() {
   })
 
   const transcribe = useMutation({
-    mutationFn: async (id: number) => {
+    mutationFn: async (id: string) => {
       const r = await fetch(`${BASE}/clone/samples/${id}/transcribe`, { method: 'POST' })
       if (!r.ok) throw new Error((await r.json())?.error?.message ?? r.statusText)
       return r.json()
@@ -68,7 +68,7 @@ export default function Clone() {
   })
 
   const del = useMutation({
-    mutationFn: async (id: number) => {
+    mutationFn: async (id: string) => {
       await fetch(`${BASE}/clone/samples/${id}`, { method: 'DELETE' })
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['samples'] }),

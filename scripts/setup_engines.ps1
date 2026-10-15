@@ -73,11 +73,82 @@ if (-not (Test-Path $venvPy)) {
     Write-Host "Style-Bert-VITS2 already installed"
 }
 
-# --- GPT-SoVITS (M5, optional) ---
+# --- GPT-SoVITS (voice cloning) ---
 $gsv = Join-Path $ext "GPT-SoVITS"
 if (-not (Test-Path $gsv)) {
     git clone --depth 1 https://github.com/RVC-Boss/GPT-SoVITS.git $gsv
-    Write-Host "GPT-SoVITS cloned - set up its venv when enabling cloning"
+}
+$gsvPy = Join-Path $gsv "venv\Scripts\python.exe"
+if (-not (Test-Path $gsvPy)) {
+    py -3.11 -m venv (Join-Path $gsv "venv")
+    # reuse the SBV2 torch wheel if present (same 2.3.1+cu121 pin)
+    $torchWheel = Join-Path $sbv2 "torch-2.3.1+cu121-cp311-cp311-win_amd64.whl"
+    $taWheel = Join-Path $sbv2 "torchaudio-2.3.1+cu121-cp311-cp311-win_amd64.whl"
+    & $gsvPy -m pip install --timeout 300 --retries 10 mkl==2021.4.0 intel-openmp tbb
+    if (Test-Path $torchWheel) {
+        & $gsvPy -m pip install --no-deps $torchWheel $taWheel
+    } else {
+        & $gsvPy -m pip install "torch<2.4" "torchaudio<2.4" --index-url https://download.pytorch.org/whl/cu121
+    }
+    & $gsvPy -m pip install --timeout 300 --retries 10 `
+        typing_extensions sympy networkx jinja2 fsspec filelock markupsafe mpmath `
+        "numpy<2.0" scipy librosa==0.10.2 numba "transformers>=4.51,<5" peft einops `
+        onnxruntime-gpu sentencepiece ffmpeg-python pyyaml psutil tqdm requests `
+        jieba split-lang "fast_langdetect>=0.3.1" wordsegment ToJyutping g2pk2 `
+        ko_pron opencc jamo cn2an pypinyin g2p_en inflect nltk matplotlib resampy `
+        "fastapi[standard]>=0.115.2" "uvicorn[standard]" "pydantic<=2.10.6" `
+        "torchmetrics<=1.5" "pytorch-lightning>=2.4" pyopenjtalk-plus cmudict
+    # torch>=2.4-only deps installed without deps (keeps cu121 2.3.1)
+    & $gsvPy -m pip install --no-deps rotary_embedding_torch x_transformers
+    & $gsvPy -m pip install loguru einx torch-einops-utils
+
+    # jieba_fast has no Windows wheel -> shim it with plain jieba
+    $jf = Join-Path $gsv "venv\Lib\site-packages\jieba_fast"
+    New-Item -ItemType Directory -Force $jf | Out-Null
+    Set-Content (Join-Path $jf "__init__.py") @"
+from jieba import *
+from jieba import lcut, lcut_for_search, cut, cut_for_search, load_userdict, Tokenizer, posseg
+import sys, jieba
+sys.modules.setdefault("jieba_fast.posseg", __import__("jieba.posseg", fromlist=["posseg"]))
+"@
+
+    # pretrained models (roberta, hubert, gsv v2) + safetensors conversion
+    # (transformers>=4.52 blocks torch.load on torch<2.6 -> need safetensors)
+    Push-Location $gsv
+    & $gsvPy -c @"
+from huggingface_hub import hf_hub_download
+import torch, safetensors.torch
+files = [
+ 'chinese-roberta-wwm-ext-large/config.json',
+ 'chinese-roberta-wwm-ext-large/pytorch_model.bin',
+ 'chinese-roberta-wwm-ext-large/tokenizer.json',
+ 'chinese-hubert-base/config.json',
+ 'chinese-hubert-base/preprocessor_config.json',
+ 'chinese-hubert-base/pytorch_model.bin',
+ 'gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt',
+ 'gsv-v2final-pretrained/s2D2333k.pth',
+ 'gsv-v2final-pretrained/s2G2333k.pth',
+]
+for f in files:
+    hf_hub_download('lj1995/GPT-SoVITS', f, local_dir='GPT_SoVITS/pretrained_models')
+# convert .bin -> safetensors to satisfy CVE-2025-32434 torch>=2.6 check
+for d in ['chinese-roberta-wwm-ext-large', 'chinese-hubert-base']:
+    p = f'GPT_SoVITS/pretrained_models/{d}'
+    sd = torch.load(p + '/pytorch_model.bin', map_location='cpu', weights_only=True)
+    seen, out = set(), {}
+    for k, v in sd.items():
+        key = (v.data_ptr(), v.numel(), tuple(v.shape))
+        if key in seen: continue
+        seen.add(key); out[k] = v.contiguous()
+    safetensors.torch.save_file(out, p + '/model.safetensors')
+print('models ready')
+"@
+    # fast_langdetect model cache (lid.176.bin + ftz)
+    & $gsvPy -c "from fast_langdetect import LangDetectConfig, LangDetector; LangDetector(LangDetectConfig(cache_dir='GPT_SoVITS/pretrained_models/fast_langdetect', model='auto'))"
+    Pop-Location
+    Write-Host "GPT-SoVITS installed"
+} else {
+    Write-Host "GPT-SoVITS already installed"
 }
 
 Write-Host "Done. Engines live under external/ (gitignored)."

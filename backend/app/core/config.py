@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     sbv2_repo: Path = external_dir / "Style-Bert-VITS2"
     sbv2_python: Path = external_dir / "Style-Bert-VITS2" / "venv" / "Scripts" / "python.exe"
 
-    gptsovits_enabled: bool = False
+    gptsovits_enabled: bool = True
     gptsovits_host: str = "127.0.0.1"
     gptsovits_port: int = 9880
     gptsovits_repo: Path = external_dir / "GPT-SoVITS"

@@ -3,6 +3,8 @@ transcript, consent gate, quick vs fine-tune modes."""
 
 import io
 import logging
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +16,7 @@ from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.core.db import get_engine, get_session
-from app.models.tables import CloneSample
+from app.models.tables import CloneSample, Voice
 
 log = logging.getLogger("api.clone")
 router = APIRouter(tags=["clone"])
@@ -68,62 +70,81 @@ async def upload_sample(
         raise HTTPException(422, detail={"code": "BAD_AUDIO",
                                        "message": f"not a readable audio file: {e}"}) from e
 
-    cid = get_settings().data_dir / "clones"
-    cid.mkdir(parents=True, exist_ok=True)
-    path = cid / f"{__import__('uuid').uuid4().hex}.wav"
-    save_wav32(path, samples, sr)
-
-    qc = _quality_check(path)
-    status = "ready" if qc["ok"] else "rejected"
-    row = CloneSample(name=name, audio_path=str(path), transcript=transcript,
-                      duration_s=qc["duration_s"], status=status,
-                      quality=qc)
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return {"id": row.id, "status": status, "quality": qc}
-
-
-def save_wav32(path: Path, samples: np.ndarray, sr: int) -> None:
+    samples_dir = get_settings().samples_dir
+    samples_dir.mkdir(parents=True, exist_ok=True)
+    sample_id = uuid.uuid4().hex
+    path = samples_dir / f"{sample_id}.wav"
     if samples.ndim > 1:
         samples = samples.mean(axis=1)
     sf.write(str(path), samples, sr, subtype="PCM_16")
 
+    qc = _quality_check(path)
+
+    sample = CloneSample(id=sample_id, audio_path=str(path),
+                         transcript=transcript, duration_s=qc["duration_s"],
+                         quality_report=qc)
+    session.add(sample)
+    # register a voice row so the catalog shows it (even if engine offline)
+    voice = Voice(
+        id=f"gptsovits:{sample_id}", engine="gptsovits",
+        engine_voice_id=sample_id, name=name,
+        styles=[{"name": "clone"}], features=["cloning"],
+        credit="GPT-SoVITS", is_cloned=True,
+        consent_at=datetime.now(UTC),
+    )
+    session.add(voice)
+    session.commit()
+    session.refresh(sample)
+    return {"id": sample.id, "voice_id": voice.id,
+            "status": "ready" if qc["ok"] else "rejected", "quality": qc}
+
 
 @router.get("/clone/samples")
 def list_samples(session: Session = Depends(get_session)):
-    rows = session.exec(select(CloneSample).order_by(CloneSample.id.desc())).all()
-    return {"samples": rows}
+    samples = session.exec(
+        select(CloneSample).order_by(CloneSample.created_at.desc())).all()
+    names = {v.id: v.name for v in session.exec(
+        select(Voice).where(Voice.engine == "gptsovits")).all()}
+    return {"samples": [{
+        "id": s.id, "name": names.get(f"gptsovits:{s.id}", s.id),
+        "audio_path": s.audio_path, "transcript": s.transcript,
+        "duration_s": s.duration_s,
+        "status": "ready" if s.quality_report.get("ok") else "rejected",
+        "quality": s.quality_report or None,
+        "created_at": s.created_at,
+    } for s in samples]}
 
 
-@router.get("/clone/samples/{sample_id}/audio")
-def sample_audio(sample_id: int, session: Session = Depends(get_session)):
+def _get_sample(session: Session, sample_id: str) -> CloneSample:
     row = session.get(CloneSample, sample_id)
     if row is None:
         raise HTTPException(404, detail={"code": "NOT_FOUND",
                                        "message": "sample not found"})
+    return row
+
+
+@router.get("/clone/samples/{sample_id}/audio")
+def sample_audio(sample_id: str, session: Session = Depends(get_session)):
+    row = _get_sample(session, sample_id)
     return FileResponse(row.audio_path, media_type="audio/wav")
 
 
 @router.delete("/clone/samples/{sample_id}")
-def delete_sample(sample_id: int, session: Session = Depends(get_session)):
-    row = session.get(CloneSample, sample_id)
-    if row is None:
-        raise HTTPException(404, detail={"code": "NOT_FOUND",
-                                       "message": "sample not found"})
+def delete_sample(sample_id: str, session: Session = Depends(get_session)):
+    row = _get_sample(session, sample_id)
     Path(row.audio_path).unlink(missing_ok=True)
     session.delete(row)
+    voice = session.get(Voice, f"gptsovits:{sample_id}")
+    if voice is not None:
+        session.delete(voice)
     session.commit()
     return {"deleted": sample_id}
 
 
 @router.post("/clone/samples/{sample_id}/transcribe")
-async def transcribe(sample_id: int, session: Session = Depends(get_session)):
+async def transcribe(sample_id: str, session: Session = Depends(get_session)):
     """Whisper transcription (FR-8.2) — run lazily on demand."""
-    row = session.get(CloneSample, sample_id)
-    if row is None:
-        raise HTTPException(404, detail={"code": "NOT_FOUND",
-                                       "message": "sample not found"})
+    row = _get_sample(session, sample_id)
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
@@ -140,7 +161,7 @@ async def transcribe(sample_id: int, session: Session = Depends(get_session)):
 
 
 class CloneCreateBody(BaseModel):
-    sample_id: int
+    sample_id: str
     mode: str = "quick"  # quick | finetune
     voice_name: str | None = None
 
@@ -149,32 +170,30 @@ class CloneCreateBody(BaseModel):
 async def create_clone(body: CloneCreateBody):
     """Create a clone voice from a sample (spec FR-8.3).
 
-    quick: zero/few-shot — voice becomes usable immediately.
-    finetune: queued training job (M5 full implementation).
+    quick: zero/few-shot — voice becomes usable immediately via gptsovits.
+    finetune: queued training job (GPU heavy; runs when supported).
     """
     with Session(get_engine()) as session:
         sample = session.get(CloneSample, body.sample_id)
         if sample is None:
             raise HTTPException(404, detail={"code": "NOT_FOUND",
                                            "message": "sample not found"})
-        if sample.status != "ready":
+        if not sample.quality_report.get("ok"):
             raise HTTPException(422, detail={"code": "SAMPLE_REJECTED",
                                            "message": "sample failed quality checks"})
+        voice = session.get(Voice, f"gptsovits:{sample.id}")
+        if body.voice_name and voice is not None:
+            voice.name = body.voice_name
+            session.add(voice)
         if body.mode == "quick":
-            sample.status = "ready"  # usable via gptsovits engine voice
-            if body.voice_name:
-                sample.name = body.voice_name
-            session.add(sample)
             session.commit()
             return {"sample_id": sample.id, "mode": "quick",
                     "voice_id": f"gptsovits:{sample.id}"}
         # finetune: register as a job
         from app.jobs import queue as jq
         job = jq.create_job(
-            "clone_finetune", None, {},
+            "clone_finetune", f"gptsovits:{sample.id}", {},
             [], [{"chapter_index": 0, "sentence_index": 0,
                   "text": f"finetune:{sample.id}"}], {})
-        sample.status = "queued"
-        session.add(sample)
         session.commit()
         return {"sample_id": sample.id, "mode": "finetune", "job_id": job.id}
