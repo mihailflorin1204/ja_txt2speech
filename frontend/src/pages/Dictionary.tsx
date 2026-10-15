@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useT } from '../i18n'
 
 const BASE = '/api/v1'
 
@@ -16,6 +17,7 @@ export default function Dictionary() {
   const [q, setQ] = useState('')
   const [form, setForm] = useState({ surface: '', reading: '', accent_type: '', pos: '', priority: '0' })
   const qc = useQueryClient()
+  const t = useT()
 
   const { data } = useQuery({
     queryKey: ['dict', q],
@@ -80,10 +82,10 @@ export default function Dictionary() {
       </div>
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        <input placeholder="surface (表層形)" value={form.surface}
+        <input placeholder={t('surface_ph')} value={form.surface}
           onChange={(e) => setForm({ ...form, surface: e.target.value })}
           className="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm" />
-        <input placeholder="reading (カタカナ)" value={form.reading}
+        <input placeholder={t('reading_ph')} value={form.reading}
           onChange={(e) => setForm({ ...form, reading: e.target.value })}
           className="bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-sm" />
         <input placeholder="accent" value={form.accent_type}

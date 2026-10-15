@@ -142,22 +142,27 @@ def _job_view(j: Job) -> dict:
     }
 
 
+async def _job_control(job_id: str, fn) -> dict:
+    status = await fn(job_id)
+    if status is None:
+        raise HTTPException(404, detail={"code": "NOT_FOUND",
+                                       "message": "job not found"})
+    return {"status": status}
+
+
 @router.post("/jobs/{job_id}/pause")
 async def pause_job(job_id: str):
-    await jq.pause(job_id)
-    return {"status": "paused"}
+    return await _job_control(job_id, jq.pause)
 
 
 @router.post("/jobs/{job_id}/resume")
 async def resume_job(job_id: str):
-    await jq.resume(job_id)
-    return {"status": "queued"}
+    return await _job_control(job_id, jq.resume)
 
 
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str):
-    await jq.cancel(job_id)
-    return {"status": "cancelled"}
+    return await _job_control(job_id, jq.cancel)
 
 
 @router.post("/jobs/{job_id}/retry")

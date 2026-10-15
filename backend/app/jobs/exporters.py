@@ -122,7 +122,7 @@ async def _write_srt(job_id: str, by_ch: dict[int, list[JobSentence]],
     for ci in sorted(by_ch):
         for s in by_ch[ci]:
             dur = s.duration_s or 0.0
-            lines.append(f"{len(lines)//4+1}\n{_ts(t)} --> {_ts(t+dur)}\n{s.text}\n")
+            lines.append(f"{len(lines)+1}\n{_ts(t)} --> {_ts(t+dur)}\n{s.text}\n")
             t += dur
     path = out_dir / "subtitles.srt"
     path.write_text("\n".join(lines), encoding="utf-8")

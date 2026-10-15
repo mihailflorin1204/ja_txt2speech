@@ -87,7 +87,22 @@ class EngineRouter:
             await self._evict_if_needed(engine_id)
             eng = self._engines[engine_id]
             health = await eng.health()
-            if health.status == "offline":
+            if health.status in ("offline", "error"):
+                await eng.start()
+            self._resident[engine_id] = time.monotonic()
+            self._resident.move_to_end(engine_id)
+            return eng
+
+    async def _ensure_started(self, engine_id: str) -> TTSEngine:
+        """Start an engine if needed and mark it resident — without evicting.
+
+        Used by catalog listing: a read-only operation must not unload
+        engines (LRU eviction is synthesis-time GPU memory management).
+        """
+        eng = self._engines[engine_id]
+        async with self._locks[engine_id]:
+            health = await eng.health()
+            if health.status in ("offline", "error"):
                 await eng.start()
             self._resident[engine_id] = time.monotonic()
             self._resident.move_to_end(engine_id)
@@ -110,14 +125,14 @@ class EngineRouter:
     # -- catalog -------------------------------------------------------------
 
     async def health(self) -> dict[str, EngineHealth]:
+        """Live health of every enabled engine (cheap ping — always fresh)."""
         out = {}
         for eng_id, eng in self._engines.items():
             try:
-                out[eng_id] = await eng.health() if eng_id in self._resident else (
-                    self._engine_health.get(eng_id) or EngineHealth(status="offline")
-                )
+                out[eng_id] = await eng.health()
             except Exception as e:  # noqa: BLE001
                 out[eng_id] = EngineHealth(status="error", detail=str(e))
+            self._engine_health[eng_id] = out[eng_id]
         return out
 
     async def all_voices(self) -> list[VoiceInfo]:
@@ -127,11 +142,13 @@ class EngineRouter:
         of a currently-offline engine still appear as unavailable (FR-2.4).
         """
         voices: dict[str, VoiceInfo] = {}
+        live: set[str] = set()
         for eng_id, eng in self._engines.items():
             try:
-                await self.ensure_running(eng_id)
+                await self._ensure_started(eng_id)
                 for v in await eng.list_voices():
                     voices[v.id] = v
+                live.add(eng_id)
             except EngineUnavailableError as e:
                 log.warning("catalog: engine %s unavailable: %s", eng_id, e)
             except Exception as e:  # noqa: BLE001
@@ -159,17 +176,10 @@ class EngineRouter:
         db_voices = {r.id: r for r in rows}
 
         for vid, row in db_voices.items():
-            if row.is_cloned:
-                voices[vid] = VoiceInfo(
-                    id=row.id, engine=row.engine, engine_voice_id=row.engine_voice_id,
-                    name=row.name, gender=row.gender,
-                    styles=[s.get("name", "") for s in row.styles],
-                    features=[Feature(f) for f in row.features],
-                    credit=row.credit, is_cloned=True, is_favorite=row.is_favorite,
-                    available=row.engine in self._resident,
-                )
-            elif vid in voices:
+            if vid in voices:
+                # listed live: merge DB-side fields (favorites, clone renames)
                 voices[vid].is_favorite = row.is_favorite
+                voices[vid].is_cloned = row.is_cloned
                 if row.name and row.name != voices[vid].name:
                     voices[vid].name = row.name
             else:
@@ -179,12 +189,13 @@ class EngineRouter:
                     name=row.name, gender=row.gender,
                     styles=[s.get("name", "") for s in row.styles],
                     features=[Feature(f) for f in row.features],
-                    credit=row.credit, is_favorite=row.is_favorite,
+                    credit=row.credit, is_cloned=row.is_cloned,
+                    is_favorite=row.is_favorite,
                     available=False,
                 )
 
         for v in voices.values():
-            if v.engine not in self._resident:
+            if v.engine not in live:
                 v.available = False
         return list(voices.values())
 

@@ -9,6 +9,7 @@ import SettingsPanel from '../components/SettingsPanel'
 import HistoryDrawer from '../components/HistoryDrawer'
 import AccentEditor from '../components/AccentEditor'
 import PresetMenu from '../components/PresetMenu'
+import { useT } from '../i18n'
 import type { Utterance } from '../types'
 
 const MAX_CHARS = 500
@@ -24,6 +25,7 @@ export default function Editor() {
   const [mode, setMode] = useState<'text' | 'accent'>('text')
   const [utterances, setUtterances] = useState<Utterance[] | null>(null)
   const { voiceId, settings } = useAppStore()
+  const t = useT()
   const audioRef = useRef<HTMLAudioElement>(null)
   const playerRef = useRef<StreamPlayer | null>(null)
   const qc = useQueryClient()
@@ -158,7 +160,7 @@ export default function Editor() {
                   if (e.key === 'A' && e.ctrlKey && e.shiftKey) { e.preventDefault(); void analyze() }
                 }}
                 aria-label="Text to synthesize"
-                placeholder="日本語のテキストを入力… (Ctrl+Enter で生成)"
+                placeholder={t('placeholder')}
                 className="absolute inset-0 bg-slate-900 border border-slate-700 rounded p-3 text-lg resize-none focus:outline-none focus:border-indigo-500"
               />
               {segments.length > 0 && (
@@ -181,14 +183,14 @@ export default function Editor() {
 
         {tooLong && (
           <div className="text-sm text-amber-400 bg-amber-950/40 border border-amber-800 rounded p-2">
-            {MAX_CHARS} 文字を超えています。長文は Jobs ページで長文合成ジョブを作成してください。
+            {t('too_long').replace('{max}', String(MAX_CHARS))}
           </div>
         )}
         {(synth.isError || streamError) && (
           <div className="text-sm text-red-400 bg-red-950/40 border border-red-800 rounded p-2">
             {streamError ??
               ((synth.error as ApiError).code === 'LONG_TEXT'
-                ? 'テキストが長すぎます。長文ジョブを作成してください。'
+                ? t('err_long_text')
                 : (synth.error as Error).message)}
           </div>
         )}

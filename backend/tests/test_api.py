@@ -105,3 +105,47 @@ def test_error_envelope(client):
     assert r.status_code == 404
     body = r.json()
     assert "error" in body and "code" in body["error"]
+
+
+def test_patch_unknown_voice_404(client):
+    """PATCH on a voice id that exists nowhere must 404, not create a row."""
+    import uuid
+    vid = f"ghost:{uuid.uuid4().hex[:8]}"
+    r = client.patch(f"/api/v1/voices/{vid}", json={"is_favorite": True})
+    assert r.status_code == 404
+
+
+def test_delete_cloned_voice_removes_files(client, tmp_path):
+    """FR-5.6: deleting a cloned voice removes the sample row + audio file."""
+    import uuid
+
+    from sqlmodel import Session
+
+    from app.core.config import get_settings
+    from app.core.db import get_engine
+    from app.models.tables import CloneSample, Voice
+
+    sid = uuid.uuid4().hex[:12]
+    sample_path = get_settings().samples_dir / f"{sid}.wav"
+    get_settings().samples_dir.mkdir(parents=True, exist_ok=True)
+    sample_path.write_bytes(b"RIFFfake")
+    with Session(get_engine()) as session:
+        session.add(CloneSample(id=sid, audio_path=str(sample_path),
+                                transcript="x", duration_s=10.0,
+                                quality_report={"ok": True}))
+        session.add(Voice(id=f"gptsovits:{sid}", engine="gptsovits",
+                          engine_voice_id=sid, name="del me",
+                          is_cloned=True))
+        session.commit()
+
+    r = client.delete(f"/api/v1/voices/gptsovits:{sid}")
+    assert r.status_code == 200
+    assert not sample_path.exists()
+    with Session(get_engine()) as session:
+        assert session.get(Voice, f"gptsovits:{sid}") is None
+        assert session.get(CloneSample, sid) is None
+
+
+def test_delete_noncloned_voice_forbidden(client):
+    r = client.delete("/api/v1/voices/voicevox:1")
+    assert r.status_code == 403

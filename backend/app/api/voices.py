@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -10,7 +11,7 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.engines.base import SynthesisSettings
 from app.engines.router import get_router, split_voice_id
-from app.models.tables import Voice
+from app.models.tables import CloneSample, Voice
 
 log = logging.getLogger("api.voices")
 router = APIRouter(tags=["voices"])
@@ -97,6 +98,9 @@ async def voice_preview(voice_id: str, session: Session = Depends(get_session)):
 async def patch_voice(voice_id: str, patch: VoicePatch,
                       session: Session = Depends(get_session)):
     info = (await _catalog()).get(voice_id)
+    if info is None and session.get(Voice, voice_id) is None:
+        raise HTTPException(404, detail={"code": "VOICE_NOT_FOUND",
+                                       "message": f"unknown voice: {voice_id}"})
     row = _row_for(voice_id, session, info)
     if patch.name is not None:
         if not row.is_cloned:
@@ -116,7 +120,16 @@ async def delete_voice(voice_id: str, session: Session = Depends(get_session)):
     if row is None or not row.is_cloned:
         raise HTTPException(403, detail={"code": "DELETE_FORBIDDEN",
                                        "message": "only cloned voices can be deleted"})
-    # M5: also remove sample + model files from disk
+    # FR-5.6: deleting a cloned voice removes all associated files
+    sample = session.get(CloneSample, row.engine_voice_id)
+    if sample is not None:
+        Path(sample.audio_path).unlink(missing_ok=True)
+        session.delete(sample)
+    if row.model_path:
+        Path(row.model_path).unlink(missing_ok=True)
+    preview = (get_settings().previews_dir
+               / f"{voice_id.replace(':', '_')}.mp3")
+    preview.unlink(missing_ok=True)
     session.delete(row)
     session.commit()
     return {"deleted": voice_id}

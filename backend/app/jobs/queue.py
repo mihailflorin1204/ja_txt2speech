@@ -25,6 +25,7 @@ MAX_ATTEMPTS = 3
 
 _queue: asyncio.Queue[str] | None = None
 _worker_task: asyncio.Task | None = None
+_current_job_id: str | None = None
 _current_cancel: asyncio.Event | None = None
 _current_pause: asyncio.Event | None = None
 
@@ -107,9 +108,10 @@ def _job_audio_dir(job_id: str) -> Path:
 async def _worker(synthesize_fn) -> None:
     from app.core.audio import save_wav  # local import: heavy deps
 
-    global _current_cancel, _current_pause
+    global _current_job_id, _current_cancel, _current_pause
     while True:
         job_id = await _get_queue().get()
+        _current_job_id = job_id
         _current_cancel = asyncio.Event()
         _current_pause = asyncio.Event()
         try:
@@ -126,6 +128,7 @@ async def _worker(synthesize_fn) -> None:
                     session.add(job)
                     session.commit()
         finally:
+            _current_job_id = None
             _current_cancel = None
             _current_pause = None
             _get_queue().task_done()
@@ -134,7 +137,7 @@ async def _worker(synthesize_fn) -> None:
 async def _run_job(job_id: str, synthesize_fn, save_wav) -> None:
     with Session(get_engine()) as session:
         job = session.get(Job, job_id)
-        if job is None or job.status in ("cancelled", "completed"):
+        if job is None or job.status in ("cancelled", "completed", "paused"):
             return
         if job.kind == "clone_finetune":
             job.status = "failed"
@@ -225,21 +228,52 @@ def _set_status(job_id: str, status: str) -> None:
             session.commit()
 
 
-async def pause(job_id: str) -> None:
-    _set_status(job_id, "paused")
-    if _current_pause:
+def _set_status_if(job_id: str, status: str, allowed: set[str]) -> str | None:
+    """Transition status only from an allowed current state.
+
+    Returns the resulting status, or None if the job doesn't exist.
+    """
+    with Session(get_engine()) as session:
+        job = session.get(Job, job_id)
+        if job is None:
+            return None
+        if job.status in allowed:
+            job.status = status
+            job.updated_at = datetime.now(UTC)
+            session.add(job)
+            session.commit()
+        return job.status
+
+
+async def pause(job_id: str) -> str | None:
+    """Pause a queued or running job. Returns the resulting status."""
+    status = _set_status_if(job_id, "paused", {"queued", "running"})
+    # only signal the pause flag if this job is the one currently in-flight
+    if status == "paused" and _current_job_id == job_id and _current_pause:
         _current_pause.set()
+    return status
 
 
-async def resume(job_id: str) -> None:
-    _set_status(job_id, "queued")
-    await _get_queue().put(job_id)
+async def resume(job_id: str) -> str | None:
+    """Resume a paused/failed job. Returns the resulting status."""
+    if (_current_job_id == job_id and _current_pause is not None
+            and _current_pause.is_set()):
+        # the run is in-flight inside its pause loop: wake it, don't requeue
+        _current_pause.clear()
+        return _set_status_if(job_id, "running", {"paused", "queued"})
+    status = _set_status_if(job_id, "queued", {"paused", "failed"})
+    if status == "queued":
+        await _get_queue().put(job_id)
+    return status
 
 
-async def cancel(job_id: str) -> None:
-    if _current_cancel:
+async def cancel(job_id: str) -> str | None:
+    """Cancel a non-terminal job. Returns the resulting status."""
+    status = _set_status_if(job_id, "cancelled",
+                            {"queued", "running", "paused"})
+    if status == "cancelled" and _current_job_id == job_id and _current_cancel:
         _current_cancel.set()
-    _set_status(job_id, "cancelled")
+    return status
 
 
 async def retry_failed(job_id: str) -> int:
@@ -251,11 +285,14 @@ async def retry_failed(job_id: str) -> int:
             r.attempts = 0
             session.add(r)
         job = session.get(Job, job_id)
-        if job:
+        prev_status = job.status if job else None
+        if job and prev_status != "running":
             job.status = "queued"
             session.add(job)
         session.commit()
         n = len(rows)
-    if n:
+    # a currently-running job picks up the reset rows on its own loop;
+    # an already-queued job is already in the asyncio queue
+    if n and _current_job_id != job_id and prev_status != "queued":
         await _get_queue().put(job_id)
     return n

@@ -61,7 +61,7 @@ class GPTSoVITSEngine:
         if not self._enabled:
             return EngineHealth(status="offline", detail="disabled")
         return EngineHealth(
-            status="online" if await self._is_up() else "offline", detail="")
+            status="ok" if await self._is_up() else "offline", detail="")
 
     async def start(self) -> None:
         if not self._enabled:
@@ -117,6 +117,8 @@ class GPTSoVITSEngine:
 
     async def list_voices(self) -> list[VoiceInfo]:
         """Clone voices come from the DB, not the engine itself."""
+        if not await self._is_up():
+            raise EngineUnavailableError("gptsovits offline")
         from app.models.tables import Voice
         with Session(get_engine()) as session:
             samples = session.exec(select(CloneSample)).all()
@@ -132,7 +134,7 @@ class GPTSoVITSEngine:
             out.append(VoiceInfo(
                 id=v.id, engine=self.name, engine_voice_id=s.id,
                 name=v.name, gender=v.gender,
-                styles=["clone"], features=["clone"],
+                styles=["clone"], features=[Feature.CLONING],
                 credit="GPT-SoVITS", is_cloned=True,
                 is_favorite=v.is_favorite))
         return out

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useT } from '../i18n'
 
 const BASE = '/api/v1'
 
@@ -25,6 +26,7 @@ interface Sample {
 
 export default function Clone() {
   const qc = useQueryClient()
+  const t = useT()
   const fileRef = useRef<HTMLInputElement>(null)
   const [name, setName] = useState('')
   const [transcript, setTranscript] = useState('')
@@ -98,8 +100,7 @@ export default function Clone() {
           <label className="text-xs text-amber-300 flex gap-2 items-start">
             <input type="checkbox" checked={consent}
               onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 accent-indigo-500" />
-            <span>この音声サンプルは私自身の声、または権利者の許可を得た音声であることを確認します。<br />
-              I confirm I own this voice sample or have the owner's permission.</span>
+            <span>{t('consent')}</span>
           </label>
           <button onClick={() => upload.mutate()}
             disabled={!file || !consent || upload.isPending}

@@ -15,7 +15,7 @@ COPY backend/app ./app
 COPY backend/tests ./tests
 
 ENV JPTTS_HOST=0.0.0.0 JPTTS_PORT=8000 JPTTS_ALLOW_NON_LOOPBACK=1 \
-    JPTTS_DATA_DIR=/data JPTTS_FFMPEG=/usr/bin/ffmpeg
+    JPTTS_DATA_DIR=/data JPTTS_FFMPEG_PATH=/usr/bin/ffmpeg
 VOLUME /data
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
